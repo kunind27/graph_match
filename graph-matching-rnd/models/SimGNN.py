@@ -1,6 +1,7 @@
 import torch
 from torch_geometric.nn.conv import GCNConv, SAGEConv
 from torch_geometric.data import Data, Batch
+from torch.nn.utils.rnn import pad_sequence
 from utils.utility import cudavar
 
 # TODO: 
@@ -69,6 +70,39 @@ class SimGNN(torch.nn.module):
         cgraph_sizes = cudavar(torch.tensor(b))
         query_batch = Batch.from_data_list(q_graphs)
         query_batch.x = self.GNN(query_batch)
+        # Query Graph Node Embeddings
         query_gnode_embeds = [g.x for g in query_batch.to_data_list()]
 
+        corpus_batch = Batch.from_data_list(c_graphs)
+        corpus_batch.x = self.GNN(corpus_batch)
+        # Corpus Graph Node Embeddings
+        corpus_gnode_embeds = [g.x for g in corpus_batch.to_data_list()]
+
+        # Obtain sigmoid attention weights and aggregate their product with node embeddings
+        q = pad_sequence(query_gnode_embeds,batch_first=True)
+        context = torch.tanh(torch.div(torch.sum(self.attention_layer(q),dim=1).T,qgraph_sizes).T)
+        sigmoid_scores = torch.sigmoid(q@context.unsqueeze(2))
+        e1 = (q.permute(0,2,1)@sigmoid_scores).squeeze()
         
+        c = pad_sequence(corpus_gnode_embeds,batch_first=True)
+        context = torch.tanh(torch.div(torch.sum(self.attention_layer(c),dim=1).T,cgraph_sizes).T)
+        sigmoid_scores = torch.sigmoid(c@context.unsqueeze(2))
+        e2 = (c.permute(0,2,1)@sigmoid_scores).squeeze()
+        
+        # Pass attention based graph embeddings to NTN and obtain similarity scores
+        scores = torch.nn.functional.relu(self.ntn_a(e1,e2) +self.ntn_b(torch.cat((e1,e2),dim=-1))+self.ntn_bias.squeeze())
+
+        # Concatenate histogram of pairwise node-node interaction scores if specified
+        if self.bins:
+            h = torch.histc(q@c.permute(0,2,1),bins=self.bins)
+            h = torch.div(h, torch.sum(h))
+
+            scores = torch.cat((scores, h), dim = 1)
+
+        scores = torch.nn.functional.relu(self.fc1(scores))
+        score = torch.sigmoid(self.fc2(scores))
+        preds = []
+        preds.append(score)
+        p = torch.stack(preds).squeeze()
+        
+        return p
