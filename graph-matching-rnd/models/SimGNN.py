@@ -5,41 +5,56 @@ from torch.nn.utils.rnn import pad_sequence
 from utils.utility import cudavar
 
 # TODO: 
+
+# High Priority
 # 1. Revise bottleneck business, K and hist length are both 16 hence more layers needed
-# 2. Can user be flexible with number of GCN layers for desirable feature extraction? 
+# 2. Can user be flexible with number of Conv layers for desirable feature extraction? 
 # 3. Ask Indra about summation technique used for passing features to attention layer weights
 # 4. Start including flags for attention mechanisms and encoder techniques
 # 5. Should GNN have different activations? (ReLU is in the paper)
+# 6. Include GIN and GAT Conv mechanisms
+# 7. Figure out if node encoding can be done internally (will let us use different kinds of
+#    encoding mechanisms like one-hot, adj-list ???)
+# 8. Does isolating an attention mechanism require returning for both query and corpus graphs?
+
+# Low Priority
+# 6. Figure out how different Conv mechanisms work, assumed same for now.
 
 class SimGNN(torch.nn.module):
     def __init__(self, input_dim: int, tensor_neurons: int = 16, filters: list = [64, 32, 16],
-                 bottle_neck: int = 16, hist_bins: int = 0):
+                 bottle_neck: int = 16, hist_bins: int = 0, conv: str = "gcn"):
         super(SimGNN, self).__init__()
         self.input_dim = input_dim
-        self.gcn_filter_list = filters
+        self.conv_filter_list = filters
         self.tensor_neurons = tensor_neurons
         self.bins = hist_bins
         self.bottle_neck_neurons = bottle_neck
-
+        self.conv_type = conv
+        
         # Initialise with 3 GCN layers
-        if(len(self.gcn_filter_list) == 3):
-            self.conv1 = GCNConv(self.input_dim, self.gcn_filter_list[0])
-            self.conv2 = GCNConv(self.gcn_filter_list[0], self.gcn_filter_list[1])
-            self.conv3 = GCNConv(self.gcn_filter_list[1], self.gcn_filter_list[2])
+        if(len(self.conv_filter_list) == 3):
+            if(self.conv_type == "gcn"):
+                self.conv1 = GCNConv(self.input_dim, self.conv_filter_list[0])
+                self.conv2 = GCNConv(self.conv_filter_list[0], self.conv_filter_list[1])
+                self.conv3 = GCNConv(self.conv_filter_list[1], self.conv_filter_list[2])
+            elif(self.conv_type == "sage"):
+                self.conv1 = SAGEConv(self.input_dim, self.conv_filter_list[0])
+                self.conv2 = SAGEConv(self.conv_filter_list[0], self.conv_filter_list[1])
+                self.conv3 = SAGEConv(self.conv_filter_list[1], self.conv_filter_list[2])
         else:
             raise RuntimeError(
-                f"Number of GCN layers "
-                f"'{len(self.gcn_filter_list)}' should be 3")
+                f"Number of Convolutional layers "
+                f"'{len(self.conv_filter_list)}' should be 3")
 
         # Attention layer mechanism that operates over sum of node embeddings
-        self.attention_layer = torch.nn.Linear(self.gcn_filter_list[2], self.gcn_filter_list[2], bias = False)
+        self.attention_layer = torch.nn.Linear(self.conv_filter_list[2], self.conv_filter_list[2], bias = False)
         torch.nn.init.xavier_uniform_(self.attention_layer.weight)
 
         # NTN capturing graph-graph interaction
         # Output is R^k vector at different scales k (tensor_neurons)
-        self.ntn_w = torch.nn.Bilinear(self.gcn_filter_list[2], self.gcn_filter_list[2], self.tensor_neurons, bias = False)
+        self.ntn_w = torch.nn.Bilinear(self.conv_filter_list[2], self.conv_filter_list[2], self.tensor_neurons, bias = False)
         torch.nn.init.xavier_uniform_(self.ntn_w.weight)
-        self.ntn_v = torch.nn.Linear(2 * self.gcn_filter_list[2], self.tensor_neurons, bias = False)
+        self.ntn_v = torch.nn.Linear(2 * self.conv_filter_list[2], self.tensor_neurons, bias = False)
         torch.nn.init.xavier_uniform_(self.ntn_v.weight)
         self.ntn_bias = torch.nn.Parameter(torch.Tensor(self.tensor_neurons, 1))
         torch.nn.init.xavier_uniform_(self.ntn_bias.weight)
@@ -63,7 +78,8 @@ class SimGNN(torch.nn.module):
 
         return features
 
-    def forward(self, batch_data, batch_data_sizes):
+    def forward(self, batch_data, batch_data_sizes, isolate = None):
+        # Entire section's data handling needs to be reworked
         q_graphs, c_graphs = zip(*batch_data)
         a,b = zip(*batch_data_sizes)
         qgraph_sizes = cudavar(torch.tensor(a))
@@ -88,6 +104,11 @@ class SimGNN(torch.nn.module):
         context = torch.tanh(torch.div(torch.sum(self.attention_layer(c),dim=1).T,cgraph_sizes).T)
         sigmoid_scores = torch.sigmoid(c@context.unsqueeze(2))
         e2 = (c.permute(0,2,1)@sigmoid_scores).squeeze()
+
+        if isolate == "att":
+            return e1, e2
+        elif isolate is not None:
+            raise ValueError("Invalid value of argument:", isolate)
         
         # Pass attention based graph embeddings to NTN and obtain similarity scores
         scores = torch.nn.functional.relu(self.ntn_a(e1,e2) +self.ntn_b(torch.cat((e1,e2),dim=-1))+self.ntn_bias.squeeze())
