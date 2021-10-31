@@ -26,8 +26,7 @@ class SimGNN(torch.nn.module):
         super(SimGNN, self).__init__()
         self.input_dim = input_dim
         self.conv_filter_list = filters
-        self.tensor_neurons = tensor_neurons
-        self.bins = hist_bins
+        self.setHyperParams(tensor_neurons, hist_bins)
         self.bottle_neck_neurons = bottle_neck
         self.conv_type = conv
         
@@ -65,6 +64,12 @@ class SimGNN(torch.nn.module):
         self.fc1 = torch.nn.Linear(feature_count, self.bottle_neck_neurons)
         self.fc2 = torch.nn.Linear(self.bottle_neck_neurons, 1) 
     
+    def setHyperParams(self, k: int, bins: int):
+        # Output Dimension of the NTN
+        self.tensor_neurons = k
+        # No. of Bins to be used for the Histogram 
+        self.bins = bins
+
     def GNN(self, data, dropout: float = 0):
         features = self.conv1(data.x, data.edge_index)
         features = torch.nn.functional.relu(features)
