@@ -84,7 +84,11 @@ class SimGNN(torch.nn.module):
         return features
 
     def forward(self, batch_data, batch_data_sizes, isolate = None):
-        # Entire section's data handling needs to be reworked
+        """
+        Forward pass with query and corpus graphs.
+        :param data: A Batch Containing a Pair of Graphs.
+        :return score: Similarity score.
+        """
         q_graphs, c_graphs = zip(*batch_data)
         a,b = zip(*batch_data_sizes)
         qgraph_sizes = cudavar(torch.tensor(a))

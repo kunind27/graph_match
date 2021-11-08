@@ -1,5 +1,5 @@
 import torch
-from torch_geometric.nn.conv import GCNConv, SAGEConv
+from torch_geometric.nn.conv import GCNConv, SAGEConv, GATConv
 from torch_geometric.data import Data, Batch
 from torch.nn.utils.rnn import pad_sequence
 
@@ -71,14 +71,11 @@ class GraphEncoder(torch.nn.Module):
     def build_simgnn_model(self):
         # Make this custom length
         if(len(self.conv_filter_list) == 3):
-            if(self.conv_type == "gcn"):
-                self.conv1 = GCNConv(self.input_node_dim, self.conv_filter_list[0])
-                self.conv2 = GCNConv(self.conv_filter_list[0], self.conv_filter_list[1])
-                self.conv3 = GCNConv(self.conv_filter_list[1], self.conv_filter_list[2])
-            elif(self.conv_type == "sage"):
-                self.conv1 = SAGEConv(self.input_node_dim, self.conv_filter_list[0])
-                self.conv2 = SAGEConv(self.conv_filter_list[0], self.conv_filter_list[1])
-                self.conv3 = SAGEConv(self.conv_filter_list[1], self.conv_filter_list[2])
+            conv_methods = {"gcn": GCNConv, "sage": SAGEConv, "gat": GATConv}
+            _conv = conv_methods[self.conv_type]
+            self.conv1 = _conv(self.input_node_dim, self.conv_filter_list[0])
+            self.conv2 = _conv(self.conv_filter_list[0], self.conv_filter_list[1])
+            self.conv3 = _conv(self.conv_filter_list[1], self.conv_filter_list[2])
         else:
             raise RuntimeError(
                 f"Number of Convolutional layers "
