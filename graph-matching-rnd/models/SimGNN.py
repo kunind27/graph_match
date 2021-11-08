@@ -58,20 +58,7 @@ class SimGNN(torch.nn.module):
         self.conv_layer = GraphEncoder(self.input_dim, None, filters = self.conv_filter_list,
                                         conv_type = self.conv_type, name = "simgnn")
         self.attention_layer = AttentionLayer(self.input_dim, type = 'simgnn', activation = self.activation)
-
-    def GNN(self, data, dropout: float = 0):
-        features = self.conv1(data.x, data.edge_index)
-        features = torch.nn.functional.relu(features)
-        features = torch.nn.functional.dropout(features, p = dropout, training = self.training)
-
-        features = self.conv2(features,data.edge_index)
-        features = torch.nn.functional.relu(features)
-        features = torch.nn.functional.dropout(features, p = dropout, training = self.training)
-
-        features = self.conv3(features, data.edge_index)
-
-        return features
-
+        
     def forward(self, batch_data, batch_data_sizes, conv_dropout: int = 0, isolate = None):
         """
         Forward pass with query and corpus graphs.
