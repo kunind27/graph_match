@@ -3,7 +3,7 @@ from torch.nn.utils.rnn import pad_sequence
 from utils.utility import cudavar
 
 class AttentionLayer(torch.nn.Module):
-    def __init__(self, type: str = 'simgnn', input_dim: int = 16, activation: str = "tanh", a = 0.1):
+    def __init__(self, input_dim, type: str = 'simgnn', activation: str = "tanh", a = 0.1):
         """
         :param: type: Type of attention mechanism to be used
         :param: input_dim: Input Dimension of the Node Embeddings
@@ -47,17 +47,12 @@ class AttentionLayer(torch.nn.Module):
         q = pad_sequence(node_embeds, batch_first=True)
         graph_sizes = cudavar(torch.tensor(graph_sizes))
         context = torch.div(torch.matmul(self.W_att, torch.sum(q, dim=1).T), graph_sizes).T
-            
+        
+        activations = {"tanh": torch.nn.functional.tanh, "leaky_relu": torch.nn.functional.leaky_relu,
+                        "relu": torch.nn.functional.relu, "sigmoid": torch.nn.functional.sigmoid}
+        _activation = activations[self.activation]
         # Applying the Non-Linearity over W_att*mean(U_i), the default is tanh
-        if self.activation == 2:
-            context = torch.tanh(context)
-        elif self.activation == 1:
-            leaky_relu = torch.nn.LeakyReLU()
-            context = leaky_relu(context)
-        elif self.activation == 0:
-            context = context.relu()
-        elif self.activation==3:
-            context = torch.sigmoid(context)
+        context = _activation(context)
 
         sigmoid_scores = torch.sigmoid(q@context.unsqueeze(2))
         e = (q.permute(0,2,1)@sigmoid_scores).squeeze() 

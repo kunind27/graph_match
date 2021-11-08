@@ -1,8 +1,10 @@
 import torch
-from torch_geometric.nn.conv import GCNConv, SAGEConv
-from torch_geometric.data import Data, Batch
+from torch_geometric.data import Batch
 from torch.nn.utils.rnn import pad_sequence
-from utils.utility import cudavar
+import torch.nn.functional
+
+from modules.attention import AttentionLayer
+from modules.encoder import GraphEncoder
 
 # TODO: 
 
@@ -22,32 +24,14 @@ from utils.utility import cudavar
 
 class SimGNN(torch.nn.module):
     def __init__(self, input_dim: int, tensor_neurons: int = 16, filters: list = [64, 32, 16],
-                 bottle_neck: int = 16, hist_bins: int = 0, conv: str = "gcn"):
+                 bottle_neck: int = 16, hist_bins: int = 0, conv: str = "gcn", activation = "tanh"):
         super(SimGNN, self).__init__()
         self.input_dim = input_dim
         self.conv_filter_list = filters
+        self.activation = activation
         self.setHyperParams(tensor_neurons, hist_bins)
         self.bottle_neck_neurons = bottle_neck
         self.conv_type = conv
-        
-        # Initialise with 3 GCN layers
-        if(len(self.conv_filter_list) == 3):
-            if(self.conv_type == "gcn"):
-                self.conv1 = GCNConv(self.input_dim, self.conv_filter_list[0])
-                self.conv2 = GCNConv(self.conv_filter_list[0], self.conv_filter_list[1])
-                self.conv3 = GCNConv(self.conv_filter_list[1], self.conv_filter_list[2])
-            elif(self.conv_type == "sage"):
-                self.conv1 = SAGEConv(self.input_dim, self.conv_filter_list[0])
-                self.conv2 = SAGEConv(self.conv_filter_list[0], self.conv_filter_list[1])
-                self.conv3 = SAGEConv(self.conv_filter_list[1], self.conv_filter_list[2])
-        else:
-            raise RuntimeError(
-                f"Number of Convolutional layers "
-                f"'{len(self.conv_filter_list)}' should be 3")
-
-        # Attention layer mechanism that operates over sum of node embeddings
-        self.attention_layer = torch.nn.Linear(self.conv_filter_list[2], self.conv_filter_list[2], bias = False)
-        torch.nn.init.xavier_uniform_(self.attention_layer.weight)
 
         # NTN capturing graph-graph interaction
         # Output is R^k vector at different scales k (tensor_neurons)
@@ -70,6 +54,11 @@ class SimGNN(torch.nn.module):
         # No. of Bins to be used for the Histogram 
         self.bins = bins
 
+    def setupLayers(self):
+        self.conv_layer = GraphEncoder(self.input_dim, None, filters = self.conv_filter_list,
+                                        conv_type = self.conv_type, name = "simgnn")
+        self.attention_layer = AttentionLayer(self.input_dim, type = 'simgnn', activation = self.activation)
+
     def GNN(self, data, dropout: float = 0):
         features = self.conv1(data.x, data.edge_index)
         features = torch.nn.functional.relu(features)
@@ -83,7 +72,7 @@ class SimGNN(torch.nn.module):
 
         return features
 
-    def forward(self, batch_data, batch_data_sizes, isolate = None):
+    def forward(self, batch_data, batch_data_sizes, conv_dropout: int = 0, isolate = None):
         """
         Forward pass with query and corpus graphs.
         :param data: A Batch Containing a Pair of Graphs.
@@ -91,40 +80,29 @@ class SimGNN(torch.nn.module):
         """
         q_graphs, c_graphs = zip(*batch_data)
         a,b = zip(*batch_data_sizes)
-        qgraph_sizes = cudavar(torch.tensor(a))
-        cgraph_sizes = cudavar(torch.tensor(b))
         query_batch = Batch.from_data_list(q_graphs)
-        query_batch.x = self.GNN(query_batch)
-        # Query Graph Node Embeddings
-        query_gnode_embeds = [g.x for g in query_batch.to_data_list()]
-
         corpus_batch = Batch.from_data_list(c_graphs)
-        corpus_batch.x = self.GNN(corpus_batch)
-        # Corpus Graph Node Embeddings
-        corpus_gnode_embeds = [g.x for g in corpus_batch.to_data_list()]
-
-        # Obtain sigmoid attention weights and aggregate their product with node embeddings
-        q = pad_sequence(query_gnode_embeds,batch_first=True)
-        context = torch.tanh(torch.div(torch.sum(self.attention_layer(q),dim=1).T,qgraph_sizes).T)
-        sigmoid_scores = torch.sigmoid(q@context.unsqueeze(2))
-        e1 = (q.permute(0,2,1)@sigmoid_scores).squeeze()
         
-        c = pad_sequence(corpus_gnode_embeds,batch_first=True)
-        context = torch.tanh(torch.div(torch.sum(self.attention_layer(c),dim=1).T,cgraph_sizes).T)
-        sigmoid_scores = torch.sigmoid(c@context.unsqueeze(2))
-        e2 = (c.permute(0,2,1)@sigmoid_scores).squeeze()
+        query_batch.x = self.conv_layer(query_batch.x, query_batch.edge_index, dropout = conv_dropout)
+        corpus_batch.x = self.conv_layer(corpus_batch.x, corpus_batch.edge_index, dropout = conv_dropout)
+
+        query_g_emb = self.attention_layer(query_batch.to_data_list(), a)
+        corpus_g_emb = self.attention_layer(corpus_batch.to_data_list(), b)
 
         if isolate == "att":
-            return e1, e2
+            return query_g_emb, corpus_g_emb
         elif isolate is not None:
             raise ValueError("Invalid value of argument:", isolate)
         
         # Pass attention based graph embeddings to NTN and obtain similarity scores
-        scores = torch.nn.functional.relu(self.ntn_a(e1,e2) +self.ntn_b(torch.cat((e1,e2),dim=-1))+self.ntn_bias.squeeze())
+        scores = torch.nn.functional.relu(self.ntn_a(query_g_emb, corpus_g_emb) + 
+                                        self.ntn_b(torch.cat((query_g_emb, corpus_g_emb),dim=-1)) + self.ntn_bias.squeeze())
 
         # Concatenate histogram of pairwise node-node interaction scores if specified
         if self.bins:
-            h = torch.histc(q@c.permute(0,2,1),bins=self.bins)
+            query_node_emb, corpus_node_emb = pad_sequence([g.x for g in query_batch.to_data_list()], batch_first = True), \
+                                                pad_sequence([c.x for c in corpus_batch.to_data_list()], batch_first = True)
+            h = torch.histc(query_node_emb@corpus_node_emb.permute(0,2,1),bins=self.bins)
             h = torch.div(h, torch.sum(h))
 
             scores = torch.cat((scores, h), dim = 1)
