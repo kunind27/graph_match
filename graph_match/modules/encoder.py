@@ -81,7 +81,7 @@ class GraphEncoder(torch.nn.Module):
                 f"Number of Convolutional layers "
                 f"'{len(self.conv_filter_list)}' should be 3")
 
-    def forward(self, node_features, edge_features = None, dropout: float = 0):
+    def forward(self, node_features, edge_features, dropout: float = 0):
         """Encode node and edge features.
 
         Args:
@@ -118,4 +118,4 @@ class GraphEncoder(torch.nn.Module):
 
             features = self.conv3(features, edge_features)
 
-            return features, edge_features
+            return features

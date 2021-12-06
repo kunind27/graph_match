@@ -1,6 +1,6 @@
 import torch
 from torch.nn.utils.rnn import pad_sequence
-from utils.utility import cudavar
+from ..utils.utility import cudavar
 
 class AttentionLayer(torch.nn.Module):
     def __init__(self, input_dim, type: str = 'simgnn', activation: str = "tanh", a = 0.1):

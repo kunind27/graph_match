@@ -1,10 +1,11 @@
 import torch
+from torch import Tensor
 from torch_geometric.data import Batch
 from torch.nn.utils.rnn import pad_sequence
 import torch.nn.functional
 
-from modules.attention import AttentionLayer
-from modules.encoder import GraphEncoder
+from ..modules.attention import AttentionLayer
+from ..modules.encoder import GraphEncoder
 
 # TODO: 
 
@@ -22,16 +23,17 @@ from modules.encoder import GraphEncoder
 # Low Priority
 # 6. Figure out how different Conv mechanisms work, assumed same for now.
 
-class SimGNN(torch.nn.module):
+class SimGNN(torch.nn.Module):
     def __init__(self, input_dim: int, tensor_neurons: int = 16, filters: list = [64, 32, 16],
                  bottle_neck: int = 16, hist_bins: int = 0, conv: str = "gcn", activation = "tanh"):
         super(SimGNN, self).__init__()
         self.input_dim = input_dim
+        self.conv_type = conv
         self.conv_filter_list = filters
         self.activation = activation
-        self.setHyperParams(tensor_neurons, hist_bins)
         self.bottle_neck_neurons = bottle_neck
-        self.conv_type = conv
+        self.setHyperParams(tensor_neurons, hist_bins)
+        self.setupLayers()
 
         # NTN capturing graph-graph interaction
         # Output is R^k vector at different scales k (tensor_neurons)
@@ -40,7 +42,7 @@ class SimGNN(torch.nn.module):
         self.ntn_v = torch.nn.Linear(2 * self.conv_filter_list[2], self.tensor_neurons, bias = False)
         torch.nn.init.xavier_uniform_(self.ntn_v.weight)
         self.ntn_bias = torch.nn.Parameter(torch.Tensor(self.tensor_neurons, 1))
-        torch.nn.init.xavier_uniform_(self.ntn_bias.weight)
+        # torch.nn.init.xavier_uniform_(self.ntn_bias.weight)
 
         # Feature Count for histogram business
         feature_count = (self.tensor_neurons + self.bins) if self.bins else self.tensor_neurons
@@ -59,12 +61,14 @@ class SimGNN(torch.nn.module):
                                         conv_type = self.conv_type, name = "simgnn")
         self.attention_layer = AttentionLayer(self.input_dim, type = 'simgnn', activation = self.activation)
         
-    def forward(self, batch_data, batch_data_sizes, conv_dropout: int = 0, isolate = None):
+    def forward(self, batch_data, batch_data_sizes, 
+                conv_dropout: int = 0, isolate = None) -> Tensor:
         """
         Forward pass with query and corpus graphs.
         :param data: A Batch Containing a Pair of Graphs.
         :return score: Similarity score.
         """
+        
         q_graphs, c_graphs = zip(*batch_data)
         a,b = zip(*batch_data_sizes)
         query_batch = Batch.from_data_list(q_graphs)
@@ -81,7 +85,6 @@ class SimGNN(torch.nn.module):
         elif isolate is not None:
             raise ValueError("Invalid value of argument:", isolate)
         
-        # Pass attention based graph embeddings to NTN and obtain similarity scores
         scores = torch.nn.functional.relu(self.ntn_a(query_g_emb, corpus_g_emb) + 
                                         self.ntn_b(torch.cat((query_g_emb, corpus_g_emb),dim=-1)) + self.ntn_bias.squeeze())
 
