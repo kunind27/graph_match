@@ -1,4 +1,5 @@
 import torch
+from torch.functional import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from ..utils.utility import cudavar
 
@@ -21,7 +22,7 @@ class AttentionLayer(torch.nn.Module):
         
     def params(self):
         if(self.type == 'simgnn'):
-            self.W_att = torch.nn.Parameter(torch.Tensor(self.d, self.d))
+            self.weight_matrix = torch.nn.Parameter(torch.Tensor(self.d, self.d))
 
     def initialize(self):
         """
@@ -30,31 +31,25 @@ class AttentionLayer(torch.nn.Module):
         If tanh/ sigmoid : Xavier Initialization
         """
         if self.activation == "leaky_relu" or self.activation == "relu":
-            torch.nn.init.kaiming_normal_(self.W_att, a = self.a, nonlinearity = self.activation)
+            torch.nn.init.kaiming_normal_(self.weight_matrix, a = self.a, nonlinearity = self.activation)
         elif self.activation == "tanh" or self.activation == "sigmoid":
-            torch.nn.init.xavier_normal_(self.W_att)
+            torch.nn.init.xavier_normal_(self.weight_matrix)
         else:
             raise ValueError("Activation can only take values: 'relu', 'leaky_relu', 'sigmoid', 'tanh';\
                             {} is invalid".format(self.activation))
 
-    def forward(self, graph_batch, graph_sizes):
+    def forward(self, node_embeds: Tensor, graph_size: Tensor):
         """ 
-        :param: graph_batch : Batch containing graphs
-        :param: size : Check Documentation https://pytorch-scatter.readthedocs.io/en/1.3.0/functions/mean.html
+        :param: node_embeds : Node Embedding Tensor of shape N x D
         :return: global_graph_embedding for each graph in the batch
-        """       
-        node_embeds = [g.x for g in graph_batch]
-        q = pad_sequence(node_embeds, batch_first=True)
-        graph_sizes = cudavar(torch.tensor(graph_sizes))
-        context = torch.div(torch.matmul(self.W_att, torch.sum(q, dim=1).T), graph_sizes).T
-        
+        """
+        context = torch.mean(torch.matmul(node_embeds, self.weight_matrix), dim = 0)
         activations = {"tanh": torch.nn.functional.tanh, "leaky_relu": torch.nn.functional.leaky_relu,
                         "relu": torch.nn.functional.relu, "sigmoid": torch.nn.functional.sigmoid}
         _activation = activations[self.activation]
-        # Applying the Non-Linearity over W_att*mean(U_i), the default is tanh
-        context = _activation(context)
-
-        sigmoid_scores = torch.sigmoid(q@context.unsqueeze(2))
-        e = (q.permute(0,2,1)@sigmoid_scores).squeeze() 
+        # Applying the Non-Linearity over Weight_matrix*mean(U_i), the default is tanh
+        transformed_context = _activation(context)
+        sigmoid_scores = torch.sigmoid(torch.mm(node_embeds, transformed_context.view(-1, 1)))
+        representation = torch.matmul(torch.t(node_embeds), sigmoid_scores)
         
-        return e
+        return representation

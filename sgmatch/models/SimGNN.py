@@ -37,15 +37,15 @@ class SimGNN(torch.nn.Module):
 
         # NTN capturing graph-graph interaction
         # Output is R^k vector at different scales k (tensor_neurons)
-        self.ntn_w = torch.nn.Bilinear(self.conv_filter_list[2], self.conv_filter_list[2], self.tensor_neurons, bias = False)
-        torch.nn.init.xavier_uniform_(self.ntn_w.weight)
-        self.ntn_v = torch.nn.Linear(2 * self.conv_filter_list[2], self.tensor_neurons, bias = False)
-        torch.nn.init.xavier_uniform_(self.ntn_v.weight)
+        self.ntn_a = torch.nn.Bilinear(self.conv_filter_list[2], self.conv_filter_list[2], self.tensor_neurons, bias = False)
+        torch.nn.init.xavier_uniform_(self.ntn_a.weight)
+        self.ntn_b = torch.nn.Linear(2 * self.conv_filter_list[2], self.tensor_neurons, bias = False)
+        torch.nn.init.xavier_uniform_(self.ntn_b.weight)
         self.ntn_bias = torch.nn.Parameter(torch.Tensor(self.tensor_neurons, 1))
         # torch.nn.init.xavier_uniform_(self.ntn_bias.weight)
 
         # Feature Count for histogram business
-        feature_count = (self.tensor_neurons + self.bins) if self.bins else self.tensor_neurons
+        feature_count = self.tensor_neurons + self.bins
         # for now only one bottle neck layer is implemented (therefore FCN has only one hidden layer)
         self.fc1 = torch.nn.Linear(feature_count, self.bottle_neck_neurons)
         self.fc2 = torch.nn.Linear(self.bottle_neck_neurons, 1) 
@@ -61,41 +61,41 @@ class SimGNN(torch.nn.Module):
                                         conv_type = self.conv_type, name = "simgnn")
         self.attention_layer = AttentionLayer(self.input_dim, type = 'simgnn', activation = self.activation)
         
-    def forward(self, batch_data, batch_data_sizes, 
-                conv_dropout: int = 0, isolate = None) -> Tensor:
+    def forward(self, x_s: Tensor, edge_index_s: Tensor, x_t: Tensor, edge_index_t: Tensor,
+                graph_sizes: list, conv_dropout: int = 0, isolate = None):
         """
         Forward pass with query and corpus graphs.
         :param data: A Batch Containing a Pair of Graphs.
         :return score: Similarity score.
         """
+        source_graph, target_graph = {}, {}
+        source_graph["x"], source_graph["edge_index"] = x_s, edge_index_s
+        target_graph["x"], target_graph["edge_index"] = x_t, edge_index_t
+        a, b = graph_sizes[0].item(), graph_sizes[1].item()
         
-        q_graphs, c_graphs = zip(*batch_data)
-        a,b = zip(*batch_data_sizes)
-        query_batch = Batch.from_data_list(q_graphs)
-        corpus_batch = Batch.from_data_list(c_graphs)
+        source_graph["x"] = self.conv_layer(source_graph["x"], target_graph["edge_index"], dropout = conv_dropout)
+        target_graph["x"] = self.conv_layer(target_graph["x"], target_graph["edge_index"], dropout = conv_dropout)
         
-        query_batch.x = self.conv_layer(query_batch.x, query_batch.edge_index, dropout = conv_dropout)
-        corpus_batch.x = self.conv_layer(corpus_batch.x, corpus_batch.edge_index, dropout = conv_dropout)
-
-        query_g_emb = self.attention_layer(query_batch.to_data_list(), a)
-        corpus_g_emb = self.attention_layer(corpus_batch.to_data_list(), b)
+        source_g_emb = self.attention_layer(pad_sequence(source_graph["x"], batch_first = True), a)
+        target_g_emb = self.attention_layer(pad_sequence(target_graph["x"], batch_first = True), b)
 
         if isolate == "att":
-            return query_g_emb, corpus_g_emb
+            return source_g_emb, target_g_emb
         elif isolate is not None:
             raise ValueError("Invalid value of argument:", isolate)
         
-        scores = torch.nn.functional.relu(self.ntn_a(query_g_emb, corpus_g_emb) + 
-                                        self.ntn_b(torch.cat((query_g_emb, corpus_g_emb),dim=-1)) + self.ntn_bias.squeeze())
+        scores = torch.nn.functional.relu(self.ntn_a(source_g_emb, target_g_emb) + 
+                                        self.ntn_b(torch.cat((source_g_emb, target_g_emb), dim=-1)) + 
+                                        self.ntn_bias.squeeze())
 
         # Concatenate histogram of pairwise node-node interaction scores if specified
-        if self.bins:
-            query_node_emb, corpus_node_emb = pad_sequence([g.x for g in query_batch.to_data_list()], batch_first = True), \
-                                                pad_sequence([c.x for c in corpus_batch.to_data_list()], batch_first = True)
-            h = torch.histc(query_node_emb@corpus_node_emb.permute(0,2,1),bins=self.bins)
-            h = torch.div(h, torch.sum(h))
+        # if self.bins:
+        #     query_node_emb, corpus_node_emb = pad_sequence([g.x for g in query_batch.to_data_list()], batch_first = True), \
+        #                                         pad_sequence([c.x for c in corpus_batch.to_data_list()], batch_first = True)
+        #     h = torch.histc(query_node_emb@corpus_node_emb.permute(0,2,1),bins=self.bins)
+        #     h = torch.div(h, torch.sum(h))
 
-            scores = torch.cat((scores, h), dim = 1)
+        #     scores = torch.cat((scores, h), dim = 1)
 
         scores = torch.nn.functional.relu(self.fc1(scores))
         score = torch.sigmoid(self.fc2(scores))
