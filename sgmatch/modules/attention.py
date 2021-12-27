@@ -38,7 +38,7 @@ class AttentionLayer(torch.nn.Module):
             raise ValueError("Activation can only take values: 'relu', 'leaky_relu', 'sigmoid', 'tanh';\
                             {} is invalid".format(self.activation))
 
-    def forward(self, node_embeds: Tensor, graph_size: Tensor):
+    def forward(self, node_embeds: Tensor):
         """ 
         :param: node_embeds : Node Embedding Tensor of shape N x D
         :return: global_graph_embedding for each graph in the batch

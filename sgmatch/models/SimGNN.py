@@ -76,8 +76,8 @@ class SimGNN(torch.nn.Module):
         source_graph["x"] = self.conv_layer(source_graph["x"], target_graph["edge_index"], dropout = conv_dropout)
         target_graph["x"] = self.conv_layer(target_graph["x"], target_graph["edge_index"], dropout = conv_dropout)
         
-        source_g_emb = self.attention_layer(pad_sequence(source_graph["x"], batch_first = True), a)
-        target_g_emb = self.attention_layer(pad_sequence(target_graph["x"], batch_first = True), b)
+        source_g_emb = self.attention_layer(source_graph["x"])
+        target_g_emb = self.attention_layer(target_graph["x"])
 
         if isolate == "att":
             return source_g_emb, target_g_emb
